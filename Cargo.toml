@@ -1,0 +1,22 @@
+[package]
+name = "quirky_binder_capnp_client"
+version = "0.1.1-dev"
+edition = "2021"
+rust-version = "1.82.0"
+license-file = "LICENSE"
+description = "Quirky Binder Cap'n Proto Client"
+documentation = "https://docs.rs/quirky_binder_capnp_client"
+repository = "https://github.com/arnodb/quirky_binder_capnp_client"
+readme = "README.md"
+
+[dependencies]
+eframe = "0.33"
+futures = "0.3"
+quirky_binder_capnp = { git = "https://github.com/arnodb/quirky_binder.git" }
+resvg = "0.45"
+smol = "2"
+teleop = "0.1"
+usvg = "0.45"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage,coverage_nightly)'] }
