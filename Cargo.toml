@@ -10,6 +10,7 @@ repository = "https://github.com/arnodb/quirky_binder_capnp_client"
 readme = "README.md"
 
 [dependencies]
+capnp = "0.21"
 eframe = "0.33"
 futures = "0.3"
 quirky_binder_capnp = { git = "https://github.com/arnodb/quirky_binder.git" }

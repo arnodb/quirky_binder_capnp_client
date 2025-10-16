@@ -1,20 +1,28 @@
-use std::env::args;
-use std::time::{Duration, Instant};
+use std::{
+    collections::BTreeMap,
+    env::args,
+    fmt::Write,
+    sync::mpsc::{sync_channel, Receiver, SyncSender, TryRecvError},
+    thread::JoinHandle,
+    time::{Duration, Instant},
+};
 
-use eframe::egui::{Align, Layout, TextWrapMode, ViewportCommand};
-use eframe::{egui, glow};
-use futures::{task::LocalSpawnExt, AsyncReadExt};
-use futures::{AsyncWriteExt, FutureExt};
+use eframe::{
+    egui,
+    egui::{Align, Layout, TextWrapMode, ViewportCommand},
+    glow,
+};
+use futures::{task::LocalSpawnExt, AsyncReadExt, AsyncWriteExt, FutureExt};
 use quirky_binder_capnp::quirky_binder_capnp;
 use resvg::tiny_skia;
-use smol::Timer;
-use smol::{process::Command, process::Stdio};
-use std::fmt::Write;
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TryRecvError};
-use std::thread::JoinHandle;
-use teleop::attach::unix_socket::connect;
-use teleop::cancellation::CancellationToken;
-use teleop::operate::capnp::client_connection;
+use smol::{
+    process::{Command, Stdio},
+    Timer,
+};
+use teleop::{
+    attach::unix_socket::connect, cancellation::CancellationToken,
+    operate::capnp::client_connection,
+};
 use usvg::Tree;
 
 const RUST_SVG: &str = include_str!("rust.svg");
@@ -79,15 +87,23 @@ pub fn state_poller(
         let state = state.get()?.get_service();
         let state: quirky_binder_capnp::state::Client = state.get_as()?;
 
+        let graph = state.graph_request().send().promise.await?;
+        let graph = graph.get()?.get_graph()?;
+
         let update_graph = async || -> Result<(), Box<dyn std::error::Error>> {
-            let graph = state.graph_request().send().promise.await?;
-            let graph = graph.get()?.get_graph()?;
+            let statuses = state.node_statuses_request().send().promise.await?;
+            let statuses = statuses.get()?.get_statuses()?;
+            let statuses = statuses
+                .into_iter()
+                .map(|s| Ok((s.get_node_name()?.to_str()?, s)))
+                .collect::<capnp::Result<BTreeMap<&str, _>>>()?;
 
             let mut dot = String::new();
 
             writeln!(&mut dot, "digraph G {{")?;
 
             let nodes = graph.get_nodes()?;
+
             for node in nodes {
                 writeln!(
                     &mut dot,
@@ -95,16 +111,55 @@ pub fn state_poller(
                     node_name_to_dot_id(node.get_name()?.to_str()?)
                 )?;
             }
+
             let edges = graph.get_edges()?;
+
             for edge in edges {
-                writeln!(
+                let tail_name = edge.get_tail_name()?.to_str()?;
+                let head_name = edge.get_head_name()?.to_str()?;
+
+                write!(
                     &mut dot,
-                    "{} -> {}",
-                    node_name_to_dot_id(edge.get_tail_name()?.to_str()?),
-                    node_name_to_dot_id(edge.get_head_name()?.to_str()?)
+                    "{} -> {} [",
+                    node_name_to_dot_id(tail_name),
+                    node_name_to_dot_id(head_name)
                 )?;
+
+                let tail_index = edge.get_tail_index();
+                let tail_counter = statuses
+                    .get(tail_name)
+                    .map(|s| capnp::Result::Ok(s.get_output_written()?.get(tail_index as _)))
+                    .transpose()?;
+
+                let head_index = edge.get_head_index();
+                let head_counter = statuses
+                    .get(head_name)
+                    .map(|s| capnp::Result::Ok(s.get_input_read()?.get(head_index as _)))
+                    .transpose()?;
+
+                for (i, (attr, val)) in tail_counter
+                    .map(|n| ("taillabel", n.to_string()))
+                    .into_iter()
+                    .chain(
+                        head_counter
+                            .map(|n| ("headlabel", n.to_string()))
+                            .into_iter(),
+                    )
+                    .enumerate()
+                {
+                    if i > 0 {
+                        write!(&mut dot, ", ")?;
+                    } else {
+                        writeln!(&mut dot)?;
+                    }
+                    writeln!(&mut dot, "{attr} = \"{val}\"",)?;
+                }
+
+                writeln!(&mut dot, "]")?;
             }
             writeln!(&mut dot, "}}")?;
+
+            //println!("DOT: {dot}");
 
             let svg = dot_to_svg(&dot).await?;
             sender.send(svg).unwrap();
@@ -215,16 +270,12 @@ impl eframe::App for SvgViewer {
             }
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => {
-                self.content = Content::Logo(
-                    usvg::Tree::from_data(RUST_SVG.as_bytes(), &usvg::Options::default())
-                        .expect("parse rust.svg"),
-                );
                 let now = Instant::now();
                 let close_at = match self.close_at {
                     Some(close_at) => close_at,
                     None => {
-                        eprintln!("will close after 3s...");
-                        let at = now + Duration::from_millis(3000);
+                        eprintln!("will close after 60s...");
+                        let at = now + Duration::from_secs(60);
                         self.close_at = Some(at);
                         at
                     }
