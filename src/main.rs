@@ -105,11 +105,54 @@ pub fn state_poller(
             let nodes = graph.get_nodes()?;
 
             for node in nodes {
-                writeln!(
-                    &mut dot,
-                    "{}",
-                    node_name_to_dot_id(node.get_name()?.to_str()?)
-                )?;
+                let node_name = node.get_name()?.to_str()?;
+
+                write!(&mut dot, "{} [", node_name_to_dot_id(node_name))?;
+
+                let node_status = statuses[node_name];
+                let state = node_status.get_state()?.which()?;
+                let read_records = node_status
+                    .get_input_read()?
+                    .iter()
+                    .fold(None, |acc, read| {
+                        acc.map_or(Some(read), |acc| Some(acc + read))
+                    });
+                let written_records = node_status
+                    .get_output_written()?
+                    .iter()
+                    .fold(None, |acc, written| {
+                        acc.map_or(Some(written), |acc| Some(acc + written))
+                    });
+                let total_records = read_records.map_or(written_records, |read| {
+                    Some(read + written_records.unwrap_or(0))
+                });
+
+                for (i, (attr, val)) in [(
+                    "color",
+                    match state {
+                        quirky_binder_capnp::node_state::Which::Waiting(()) => "#59636e",
+                        quirky_binder_capnp::node_state::Which::Running(()) => {
+                            match total_records {
+                                None => "#59636e",
+                                Some(_) => "#dbab0a",
+                            }
+                        }
+                        quirky_binder_capnp::node_state::Which::Success(()) => "#1a7f37",
+                        quirky_binder_capnp::node_state::Which::Error(_) => "#d1242f",
+                    },
+                )]
+                .into_iter()
+                .enumerate()
+                {
+                    if i > 0 {
+                        write!(&mut dot, ", ")?;
+                    } else {
+                        writeln!(&mut dot)?;
+                    }
+                    writeln!(&mut dot, "{attr} = \"{val}\"",)?;
+                }
+
+                writeln!(&mut dot, "]")?;
             }
 
             let edges = graph.get_edges()?;
